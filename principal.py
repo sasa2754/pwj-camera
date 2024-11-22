@@ -1,16 +1,18 @@
 from flask import Flask, Response
 import cv2
-import subprocess
+import numpy as np
 import mysql.connector
 from collections import deque
 import time
+import threading
+import subprocess
 
 # Inicializa a fila de entregas do robô
 delivery_queue = deque()
 is_busy = False
 
 # Inicializa a webcam
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)  # Verifique se o índice da câmera está correto (0 ou 1)
 
 # Função para conectar ao banco de dados mysql
 def create_connection():
@@ -30,7 +32,9 @@ def create_connection():
 
 # Função para pegar os dados do banco  
 def get_data_from_mysql():
+    print("Buscando entregas do banco de dados...")
     connection = create_connection()
+
     if connection:
         cursor = connection.cursor()
         cursor.execute("SELECT sector, dateInit, dateEnd FROM deliveries ORDER BY dateInit")
@@ -39,12 +43,14 @@ def get_data_from_mysql():
         for row in records:
             sector, dateInit, dateEnd = row
             delivery_queue.append({'sector': sector, 'dateInit': dateInit, 'dateEnd': dateEnd})
-            print(f"Setor: {sector}, Data Inicial: {dateInit}, Data Final: {dateEnd}")
+            print(f"Entrega encontrada - Setor: {sector}, Data Inicial: {dateInit}, Data Final: {dateEnd}")
 
         cursor.close()
         connection.close()
+    else:
+        print("Não foi possível conectar ao banco de dados.")
 
-# Função para processar entrega
+# Função de ver se o robô está ocupado ou livre e realizar a entrega com base nisso
 def process_delivery(delivery):
     global is_busy
 
@@ -54,35 +60,149 @@ def process_delivery(delivery):
 
     is_busy = True
     sector = delivery['sector']
-    print(f'Processando entrega para o setor {sector}')
+    print(f'Iniciando a entrega para o setor {sector}')
 
     while True:  # Loop para seguir a linha até o setor
         success, frame = cap.read()
         if not success:
-            print("Erro ao capturar frame da câmera.")
-            break
+            print("Erro ao capturar frame da câmera. Continuando a busca...")
+            continue  # Continua tentando capturar o frame
 
-        # Simulação de detecção de erro com base no setor
         if sector == "ETS":
             print("ETS - Linha amarela")
             result = detec_line_yellow(frame)
         elif sector == "SAP":
             print("SAP - Linha azul")
             result = detec_line_blue(frame)
+        elif sector == "ICO":
+            print("ICO - Linha vermelha")
+            result = detec_line_red(frame)
         else:
-            print(f"Setor desconhecido: {sector}. Parando...")
-            break
+            print(f"Setor desconhecido: {sector}. Continuando a busca...")
+            continue  # Continua a busca sem interromper o processo
 
-        if result and isinstance(result, tuple) and len(result) == 2:
+        if result is None:
+            print(f"Não foi possível detectar a linha para o setor {sector}. Continuando a busca...")
+            continue  # Continua buscando sem interromper o processo
+
+        # Garantir que result tenha dois valores a serem desempacotados
+        if isinstance(result, tuple) and len(result) == 2:
             frame, error = result
             subprocess.Popen(["python3", "motor.py", str(error)])  # Chama o script do motor
-        else:
-            print("Erro indefinido. Continuando a busca...")
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        else:
+            print(f"Erro no retorno da detecção da linha para o setor {sector}. Continuando a busca...")
+            continue  # Se não for um retorno válido, continua buscando
+
+        if detect_line_green(frame):
+            print("Carrinho chegou ao destino, entrega concluída. Voltando para a base!")
             break
 
-    is_busy = False
+        # Exibe o frame com feedback visual (opcional)
+        cv2.imshow('Robô', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):  # Permite interromper o loop com 'q'
+            print("Entrega interrompida pelo usuário.")
+            break
+
+    print(f"Entrega para o setor {sector} concluída. Processando próxima entrega...")
+
+    # Processa a próxima entrega na fila, se houver
+    if delivery_queue:
+        next_delivery = delivery_queue.popleft()
+        print("Próxima entrega na fila.")
+        process_delivery(next_delivery)
+
+# Função para detectar uma linha amarela
+def detec_line_yellow(frame):
+    print("Entrou na função da ETS")
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_yellow = np.array([20, 100, 100])
+    upper_yellow = np.array([30, 255, 255])
+
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 3)
+            cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+
+            frame_center_x = frame.shape[1] // 2
+            error = cx - frame_center_x
+            return frame, error
+        print("Chegou ao final da função ETS")
+        return frame, None 
+
+# Função para detectar uma linha azul
+def detec_line_blue(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_blue = np.array([100, 150, 0])
+    upper_blue = np.array([140, 255, 255])
+
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 3)
+            cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+
+            frame_center_x = frame.shape[1] // 2
+            error = cx - frame_center_x
+            return frame, error
+        
+        return frame, None
+
+def detec_line_red(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_red = np.array([0, 100, 100])
+    upper_red = np.array([10, 255, 255])
+    mask = cv2.inRange(hsv, lower_red, upper_red)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 3)
+            cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+
+            frame_center_x = frame.shape[1] // 2
+            error = cx - frame_center_x
+            return frame, error
+        
+        return frame, None
+
+# Função para detectar a linha verde (destino de entrega)
+def detect_line_green(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_green = np.array([35, 50, 50])
+    upper_green = np.array([85, 255, 255])
+
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(largest_contour) > 1000:
+            return True
+    return False
 
 # Flask streaming para a webcam
 def generate_frames():
@@ -103,6 +223,17 @@ app = Flask(__name__)
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-if __name__ == '__main__':
+@app.route('/deliveries')
+def deliveries():
+    # Buscar e processar entregas
     get_data_from_mysql()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+
+    if delivery_queue:
+        delivery = delivery_queue.popleft()
+        threading.Thread(target=process_delivery, args=(delivery,)).start()
+        return "Entrega em andamento..."
+    return "Nenhuma entrega pendente."
+
+if __name__ == '__main__':
+    deliveries()
+    app.run(debug=True, host='0.0.0.0', port=5000)

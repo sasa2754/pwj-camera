@@ -20,7 +20,6 @@ def move_motors(error):
         print("Erro zero: andando para frente.")
         motor_A.forward()
         motor_B.forward()
-    sleep(2)  # Simulação de movimento
     motor_A.stop()
     motor_B.stop()
 
