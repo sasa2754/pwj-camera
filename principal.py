@@ -13,7 +13,7 @@ import socket
 delivery_queue = deque()
 is_busy = False
 
-ESP32_IP = '192.168.1.29' # Endereço IP da esp32
+ESP32_IP = '192.168.230.247' # Endereço IP da esp32
 ESP32_PORT = 80 # Mesma porta configurada na ESP32
 
 # Cria um socket TPC (socket é um ponto de comunicação entre dois dispositivos de uma rede, ele permite a troca de dados entre dispositivos usando protocolos de rede, como o TCP, que é um protocolo que garante que os dados sejam entregues na ordem correta e sem falhas)
