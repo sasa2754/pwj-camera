@@ -5,11 +5,35 @@ import mysql.connector
 from collections import deque
 import time
 import threading
-import subprocess
+import socket
+
+# import subprocess
 
 # Inicializa a fila de entregas do robô
 delivery_queue = deque()
 is_busy = False
+
+ESP32_IP = '192.168.1.29' # Endereço IP da esp32
+ESP32_PORT = 80 # Mesma porta configurada na ESP32
+
+# Cria um socket TPC (socket é um ponto de comunicação entre dois dispositivos de uma rede, ele permite a troca de dados entre dispositivos usando protocolos de rede, como o TCP, que é um protocolo que garante que os dados sejam entregues na ordem correta e sem falhas)
+def ensure_connection():
+    try:
+        s.connect((ESP32_IP, ESP32_PORT))
+    except socket.error as e:
+        print(f'Erro de conexão: {e}')
+        time.sleep(5)  # Espera um tempo antes de tentar novamente
+        ensure_connection()
+
+
+# Função para enviar o erro para a ESP32
+def send_error(error):
+    try:
+        s.sendall(f'{error}\n'.encode()) # O erro é enviado como uma string, para facilitar a leitura na ESP32, pois podemos ler cada linha de dados com o parâmetro final do \n e só converter depois com um .toInt
+    except Exception as e:
+        print(f'Erro ao enviar dados para a ESP32: {e}')
+
+
 
 # Inicializa a webcam
 cap = cv2.VideoCapture(1)  # Verifique se o índice da câmera está correto (0 ou 1)
@@ -88,7 +112,8 @@ def process_delivery(delivery):
         # Garantir que result tenha dois valores a serem desempacotados
         if isinstance(result, tuple) and len(result) == 2:
             frame, error = result
-            subprocess.Popen(["python3", "motor.py", str(error)])  # Chama o script do motor
+            send_error(error)
+            # subprocess.Popen(["python3", "motor.py", str(error)])  # Chama o script do motor
 
         else:
             print(f"Erro no retorno da detecção da linha para o setor {sector}. Continuando a busca...")
